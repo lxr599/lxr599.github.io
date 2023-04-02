@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  
+  
+  
+  <title>
+    paper-ConMem |
+    
+    Aoi.
+  </title>
+  <!-- Icon -->
+  
+    <link rel="shortcut icon" href="/favicon.ico">
+    
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+  
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<script src="/js/pace.min.js"></script>
+
+<meta name="generator" content="Hexo 6.3.0"></head>
+
+<body>
+  <main class="content">
+    <section class="outer">
+  <article id="post-paper-ConMem" class="article article-type-post" itemscope
+  itemprop="blogPost" data-scroll-reveal>
+
+  <div class="article-inner">
+    
+    <header class="article-header">
+      
+  
+  <h1 class="article-title" itemprop="name">
+    paper-ConMem
+  </h1>
+  
+  
+
+    </header>
+    
+
+    
+    <div class="article-meta">
+      <a href="/2023/04/02/paper-ConMem/" class="article-date">
+  <time datetime="2023-04-02T05:49:45.000Z" itemprop="datePublished">2023-04-02</time>
+</a>
+      
+    </div>
+    
+
+    
+    
+<div class="tocbot"></div>
+
+    
+
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+        <h2 id="Abstract"><a href="#Abstract" class="headerlink" title="Abstract"></a>Abstract</h2><p>软件发布之前好好利用有限资源并暴露严重的并发bug<br>本文针对的并发bug是 程序崩溃program crashes。<br>作者发现一种和程序崩溃高度相关的模式，叫并发内存bug，直接导致共享内存对象上的内存错误（空指针引用，悬挂指针，缓冲区溢出，未初始化读取）。</p>
+<p>构建了ConMem来监控程序执行、分析内存访问和同步，预测性地检测常见且严重的并发内存bug。</p>
+<blockquote>
+<p>fault：可能导致系统或功能失效的异常条件，可译为“故障”。<br>failure：当一个系统不能执行所要求的功能时，即为Failure，可译为“失效”。<br>error：计算、观察或测量值或条件，与真实、规定或理论上正确的值或条件之间的差异<br>（binary）instrumentation中文翻译二进制插桩：将额外代码插入应用程序以观察其行为的技术，插入的代码对应用程序透明。可以在运行时（动态BI）或离线（静态BI）完成。</p>
+</blockquote>
+<h2 id="4-检测严重的bug"><a href="#4-检测严重的bug" class="headerlink" title="4. 检测严重的bug"></a>4. 检测严重的bug</h2><h3 id="4-1-overview"><a href="#4-1-overview" class="headerlink" title="4.1 overview"></a>4.1 overview</h3><img src="/2023/04/02/paper-ConMem/conMem1.png" class title="overview">
+
+<h3 id="4-2-Con-NULL-检测"><a href="#4-2-Con-NULL-检测" class="headerlink" title="4.2 Con-NULL 检测"></a>4.2 Con-NULL 检测</h3><h4 id="4-2-1-什么是Con-NULL-bug？"><a href="#4-2-1-什么是Con-NULL-bug？" class="headerlink" title="4.2.1 什么是Con-NULL bug？"></a>4.2.1 什么是Con-NULL bug？</h4><p>是由buggy interleaving直接导致的空指针解引用。</p>
+<img src="/2023/04/02/paper-ConMem/conNULL.png" class title="Con-NULL">
+
+<p>线程1的S2解引用了一个<strong>共享</strong>指针变量 proc_info，线程2的S3将NULL赋值给同一个变量，在错误的interleaving下，S3在S1和S2中间执行，导致空指针解引用和MySQL崩溃。<br>一般来说，Con-NULL bug基本成分包括两个指针访问，分别为wp和rp。wp将null写入共享指针变量ptr，rp从另一个线程读取ptr，然后执行解引用。<br>con-null的时间条件是：rp之前执行wp，期间不对ptr执行其他的写。</p>
+<h4 id="4-2-2-con-null检测算法"><a href="#4-2-2-con-null检测算法" class="headerlink" title="4.2.2 con-null检测算法"></a>4.2.2 con-null检测算法</h4><p><strong>检测基本成分</strong><br>对于每个堆&#x2F;全局访问，conmem在运行时收集其线程ID、程序计数器、内存位置、存储值信息。分析它们很容易得到con-null嫌疑人。唯一问题就是将保存指针的内存位置 和 保存普通整数或布尔变量的内存位置 区分开。<br><strong>检查时序条件</strong><br>发现可疑之处之后（例如有一个{wp，rp}对），下一步检查程序中的同步操作是否允许wp在rp之前。<br>保证通用性的前提下，conmen分别考虑 <strong>互斥同步mutual exclusion sync</strong> 和 <strong>顺序同步order sync</strong>。<br>顺序同步操作在并发执行的所有访问之间建立一种 happens-before偏序。在这种happens-before顺序下，两个访问 要么严格有序，要么彼此并发。</p>
+<blockquote>
+<p>hapens-before：一种规则，如果一个操作 happens-before 另一个操作，那么第一个操作的执行结果将对第二个操作<strong>可见</strong>，且 第一个操作执行顺序在第二个操作之前。<br>偏序：集合中只有部分元素在这个关系下都可比较。<br>全序：集合中任何一对元素在这个关系下都可以比较</p>
+</blockquote>
+<p>当且仅当一下两个条件之一满足时，order sync可以使con-null时序条件不可行：（1）null赋值严格在指针读之后，（2）对指针的另一个写操作 严格的在null赋值和读之间。顺序由happens-before关系决定。</p>
+<p>mutual exclusion，例如锁和事务，可以防止某些代码区域，例如由相同的锁保护的或事务覆盖的代码区域，相互干扰。<br>ME可用两个方面保护 {wp，rp} 并防止con-null错误，（1）rp和之前的从同一个线程的对ptr的写 对wp是原子的，我的理解是原子就是不能并发，要排序，这样保证不会读到null指针 （2）wp和后来的从同一个线程对ptr的写 对rp是原子的。（wp和rp来自两个线程）<br>（1）中rp总是使用自己线程的定义，不是wp的。（2）中wp的赋值总是在到达rp之前被重写。<br>sync分析不可靠也不完整，因为没考虑未来的interleaving潜在的控制流变化。</p>
+<h4 id="4-2-3-实现"><a href="#4-2-3-实现" class="headerlink" title="4.2.3 实现"></a>4.2.3 实现</h4><p>ConMem使用<strong>运行时记录run-time recording</strong>(利用PIN BI)和<strong>离线trace分析 off-line trace analysis</strong>实现了上述算法。<br>选择trace分析，而不是纯粹的运行时检测。</p>
+<blockquote>
+<p>PIN：一种软件检测工具。执行Linux应用程序的运行时BI。</p>
+</blockquote>
+<p>run-time记录三种信息：<br>一个是全局 或 堆内存访问信息，用于识别基本成分（例如{wp，rp}）<br>二是同步操作，包括barrier、pthread互斥锁、pthread create&#x2F;join。用于检查嫌疑者的时序条件。</p>
+<blockquote>
+<p>barriers：字面意思为“壁垒，屏障，栅栏”，在并行程序中，Barriers 是一种同步的手段，可被视为一种线程同步原语，如一组线程&#x2F;进程的 Barrier 可以用来同步该线程&#x2F;进程组，只有当该线程&#x2F;进程组中<strong>所有线程到达屏障点（可称之为同步点）时</strong>，整个程序才得以继续执行。</p>
+</blockquote>
+<p>最后是所有的 malloc&#x2F;free 操作的信息。虚拟地址可以通过 malloc&#x2F;free 回收，所以这部分可以帮我们识别哪些内存位置真正持有相同的内存对象。</p>
+<p>con-null只记录和分析对指针变量的内存访问。当前的实现根据 读&#x2F;写值 区分 指针访问 和 非指针访问。就说，当设计的 value 明显超出 栈、堆、全局数据区域，或者 0 这个范围时，我们就忽略内存访问。</p>
+<p>trace分析包括三步<br>（1）识别所有{wp，rp}对，<br>（2）分析互斥同步<br>（3）分析顺序同步<br>（1）很简单，通过查看trace中的内存地址、thread id、存储值信息，可以很容易找出疑似con-null的地方。<br>（2）对于每个可疑的 wp rp对，ConMem从trace中识别出 rp之前的写入操作（称为rp-p）和 wp后续的写入（wp-f），然后计算 保护 rp，{rp-p,rp}，wp，{wp,wp-f} 的锁集。{rp-p,rp} 和 wp 之间的或 {wp,wp-f} 和 rp 之间的锁集重叠表明这个可疑对象受到了很好的保护，不应作为bug报告。（我的理解，首先，不同线程用不同的锁保护用一个共享变量，可能会造成 两个线程同时访问一个共享变量。{rp-p, rp}和wp，如果锁集交集为空，说明没有锁能保证每次访问时都被使用，可能会触发引发con-null的时序条件，而有交集，即文中的重叠，说明有相同的锁被使用）<br>（3）是确定order sync是否可以保护{wp，rp}对 不受空指针解引用的影响。直接解决方案是 计算con-null可疑对象中所有的内存访问时间戳，并根据上面讨论的条件比较他们的时间戳。计算不难，因为trace包含运行时执行的每个order sync的同步信息。</p>
+<p>上面分析中耗时间的部分是，对于访问内存位置ptr的{wp，rp}对，我们必须找到对ptr的每个内存访问，并检查它是否在wp和rp之间严格有序。<br>启发式方法：如果存在这样一个在wp和rp之间严格有序的ptr定义，它通常来自与wp或rp相同的线程。在这种启发式下，我们只需要检查可能位于rp和wp之间的两个候选：rp的线程中在rp之前写入ptr，和  wp的线程中在wp之后写入ptr。</p>
+<p>trace size是所有基于trace的分析工具的一个潜在问题。由于Con-NULL只记录（可能）触摸指针变量的堆&#x2F;全局内存访问，因此它的trace将明显小于那些由 确定性replay工具生成的trace。</p>
+<h3 id="4-3-Con-UnInit检测"><a href="#4-3-Con-UnInit检测" class="headerlink" title="4.3 Con-UnInit检测"></a>4.3 Con-UnInit检测</h3><h4 id="4-3-1-什么是-Con-UnInit-bug？"><a href="#4-3-1-什么是-Con-UnInit-bug？" class="headerlink" title="4.3.1 什么是 Con-UnInit bug？"></a>4.3.1 什么是 Con-UnInit bug？</h4><img src="/2023/04/02/paper-ConMem/conUnInit.png" class title="Con-UnInit">
+
+<p>是 由buggy interleaving引起的未初始化的内存读取。<br>图中，在线程1的S1上初始化了一个共享变量h→bandwidth。对这个变量的读访问应该发生在S1之后。不幸的是，如果没有适当的同步，线程2中的S2可能会在<strong>S1之前</strong>执行，并读取一个未初始化的变量h-&gt;band，这将导致稍后的assert失败。</p>
+<p>Con-UnInit基本成分通常包括 对 依赖其他线程初始化的内存位置 的读访问，记为r(例如，上图中的S2)。Con-UnInit的时序条件是 在其他线程的初始化之前执行 r。</p>
+<p>请注意，当我们观察到r读取 由它自己的线程定义的值 时，在不同的interleaving下不太可能发生未初始化的读取。然而，也有例外。例如，未来的interleaving可能会改变执行路径并使本地定义消失。这超出了我们对并发内存错误的定义，在这里没有考虑。</p>
+<h4 id="4-3-2-检测算法和实现"><a href="#4-3-2-检测算法和实现" class="headerlink" title="4.3.2 检测算法和实现"></a>4.3.2 检测算法和实现</h4><p>运行时检测，不进行trace分析。</p>
+<p><strong>检测基本成分</strong><br>这个任务识别 共享内存读shared-memory read，他的目标内存位置不是在自己线程中定义的，而是在其他线程中。这些read被认为是Con-UnInit嫌疑对象。依赖于PIN 插桩框架，使用哈希表Initializer来维护每个线程的信息，这些信息是关于在这个线程中哪些内存位置已经初始化了。<br>具体来说，Initializer是根据内存位置建立索引的。无论何时发生对内存位置 v 的写入，都将检查Initializer，以确定这是否是该线程对v的第一次写入。如果是，则将这次写入的信息插入到表中。在每次对堆变量的读访问时，查找Initializer将显示所有Con-UnInit可疑对象。</p>
+<p><strong>检查时序条件</strong><br>在运行时，每当发现一个 read 可疑点 r 时，ConMem必须进行同步分析，并确定是否存在一个严格在 r 之前有序的远程初始化。mutual exclusion不能帮助避免这种类型的错误，这里不考虑。<br>在运行时执行此任务需要一些信息，假设嫌疑对象 r 访问内存位置 v。<br>我们需要的第一个信息是 r 的时间戳。ConMem在运行时维护每个线程的时间戳，通过拦截顺序同步（即barrier和pthread create&#x2F;join），并基于经典的Lamport算法分析它们，r的时间戳可以很容易地从它自己线程的当前时间戳中检索到。<br>第二个信息是其他线程对 v 的所有初始化的时间戳。这个信息保存在上面提到的Initializer表中。具体来说，当发现一个 write 访问是线程 t 对 v 的第一次写入时，t 的当前时间戳被插入到 Initializer 中。最后，在获得上述信息之后，ConMem将 r 的时间戳与远程初始化器的时间戳进行比较。当 r 与所有记录的初始化时间戳并发时，将报告Con-UnInit bug。作为优化，我们只对从每个线程到内存位置 v 的第一次 read 执行上述检查，这足以检测 v 上的Con-UnInit错误，如果它们存在的话。</p>
+<p>一些未初始化读取可能不会产生负面影响。<br>Con-UnInit在线执行所有的分析，它的运行时分析将比Con-NULL消耗更多的内存。ConUnInit的内存消耗主要用于存储每个活跃的堆&#x2F;全局内存位置的初始化时间戳。</p>
+<p>。。。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://example.com/2023/04/02/paper-ConMem/" data-id="clfz5wylg0000pg9x6b7r2jug" class="article-share-link">
+        Share
+      </a>
+      
+<ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Bug-detection/" rel="tag">Bug detection</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Paper-Notes/" rel="tag">Paper Notes</a></li></ul>
+
+    </footer>
+
+  </div>
+
+  
+  
+<nav class="article-nav">
+  
+  
+  <a href="/2023/03/31/hello-world/" class="article-nav-link">
+    <strong class="article-nav-caption">Older</strong>
+    <div class="article-nav-title">Hello World</div>
+  </a>
+  
+</nav>
+
+  
+
+  
+  
+  
+  
+
+</article>
+</section>
+    <footer class="footer">
+  <div class="outer">
+    <ul class="list-inline">
+      <li>Aoi. &copy; 2023</li>
+      
+        <li>
+          
+            <a href="https://beian.miit.gov.cn/" target="_blank"></a>
+            
+        </li>
+      
+      <li>Powered by <a href="http://hexo.io/" target="_blank">Hexo</a></li>
+      <li>theme  <a target="_blank" rel="noopener" href="https://github.com/zhwangart/hexo-theme-ocean">Ocean</a></li>
+    </ul>
+    <p><ul class="list-inline">
+  
+  <li><i class="fe fe-smile-alt tooltip" data-tooltip="UV"></i> <span id="busuanzi_value_site_uv"></span></li>
+  
+  <li><i class="fe fe-bookmark tooltip" data-tooltip="PV"></i> <span id="busuanzi_value_page_pv"></span></li>
+  
+</ul></p>
+  </div>
+</footer>
+  </main>
+  <aside class="sidebar">
+    <button class="navbar-toggle"></button>
+<nav class="navbar">
+  
+  <div class="logo">
+    <a href="/"><img src="/images/hexo.svg" alt="Aoi."></a>
+  </div>
+  
+  <ul class="nav nav-main">
+    
+    <li class="nav-item">
+      <a class="nav-item-link" href="/">Home</a>
+    </li>
+    
+    <li class="nav-item">
+      <a class="nav-item-link" href="/archives">Archives</a>
+    </li>
+    
+    <li class="nav-item">
+      <a class="nav-item-link nav-item-search" title="Search">
+        <i class="fe fe-search"></i>
+        Search
+      </a>
+    </li>
+  </ul>
+</nav>
+<nav class="navbar navbar-bottom">
+  <ul class="nav">
+    <li class="nav-item">
+      <div class="totop" id="totop">
+  <i class="fe fe-rocket"></i>
+</div>
+    </li>
+    <li class="nav-item">
+      
+      <a class="nav-item-link" target="_blank" href="/atom.xml" title="RSS Feed">
+        <i class="fe fe-feed"></i>
+      </a>
+      
+    </li>
+  </ul>
+</nav>
+<div class="search-form-wrap">
+  <div class="local-search local-search-plugin">
+  <input type="search" id="local-search-input" class="local-search-input" placeholder="Search...">
+  <div id="local-search-result" class="local-search-result"></div>
+</div>
+</div>
+  </aside>
+  
+<script src="/js/jquery-2.0.3.min.js"></script>
+
+
+<script src="/js/jquery.justifiedGallery.min.js"></script>
+
+
+<script src="/js/lazyload.min.js"></script>
+
+
+<script src="/js/busuanzi-2.3.pure.min.js"></script>
+
+
+
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+
+<script src="/js/tocbot.min.js"></script>
+
+
+<script>
+  // Tocbot_v4.7.0  http://tscanlin.github.io/tocbot/
+  tocbot.init({
+    tocSelector: '.tocbot',
+    contentSelector: '.article-entry',
+    headingSelector: 'h1, h2, h3, h4, h5, h6',
+    hasInnerContainers: true,
+    scrollSmooth: true,
+    positionFixedSelector: '.tocbot',
+    positionFixedClass: 'is-position-fixed',
+    fixedSidebarOffset: 'auto',
+  });
+</script>
+
+
+
+<script src="/js/ocean.js"></script>
+
+</body>
+
+</html>
